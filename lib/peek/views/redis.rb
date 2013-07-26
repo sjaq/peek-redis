@@ -1,99 +1,62 @@
 require 'redis'
-require 'active_support/notifications'
+require 'atomic'
 
-# Instrument Redis
-
+# Instrument Redis time
 class Redis::Client
-  
+  class << self
+    attr_accessor :query_time, :query_count
+  end
+  self.query_count = Atomic.new(0)
+  self.query_time = Atomic.new(0)
+
   [:call, :call_pipeline, :call_loop].each do |method|
     define_method(:"#{method}_with_instrument") do |*args, &block|
-      ActiveSupport::Notifications.instrument(Peek::Views::Redis.request_id) do
+      begin
+        start = Time.now
         send :"#{method}_without_instrument", *args, &block
+      ensure
+        duration = (Time.now - start)
+        Redis::Client.query_time.update { |value| value + duration }
+        Redis::Client.query_count.update { |value| value + 1 }
       end
     end
   
     alias_method_chain method, :instrument
   end
-
 end
 
 module Peek
   module Views
     class Redis < View
-      def self.request_id
-        "redis-#{ Thread.current.object_id }"
+      def duration
+        ::Redis::Client.query_time.value
+      end
+
+      def formatted_duration
+        ms = duration * 1000
+        if ms >= 1000
+          "%.2fms" % ms
+        else
+          "%.0fms" % ms
+        end
+      end
+
+      def calls
+        ::Redis::Client.query_count.value
       end
 
       def results
-        { :duration => formatted_duration, :calls => events.size }
+        { :duration => formatted_duration, :calls => calls }
       end
 
       private
 
-      DURATION_THRESHOLD = 1000
-
       def setup_subscribers
-        before_request do
-          self.subscribers = []
-          self.events      = []
-
-          subscribers << subscribe(request_id) do |*args|
-            events << ActiveSupport::Notifications::Event.new(*args)
-          end
+        # Reset each counter when a new request starts
+        subscribe 'start_processing.action_controller' do
+          ::Redis::Client.query_time.value = 0
+          ::Redis::Client.query_count.value = 0
         end
-
-        after_request do
-          subscribers.each do |subscriber|
-            ActiveSupport::Notifications.unsubscribe(subscriber)
-          end
-        end
-      end
-
-      def after_request
-        subscribe 'process_action.action_controller' do |name, start, finish, id, payload|
-          yield name, start, finish, id, payload
-        end
-      end
-
-      def subscribers
-        Thread.current[_subscribers_key]
-      end
-
-      def subscribers=(subscribers)
-        Thread.current[_subscribers_key] = []
-      end
-
-      def events
-        Thread.current[_events_key]
-      end
-
-      def events=(events)
-        Thread.current[_events_key] = events
-      end
-
-      def request_id
-        self.class.request_id
-      end
-
-      def duration
-        events.inject(0) {|result, e| result += e.duration }
-      end
-
-      def formatted_duration
-        ms = duration
-        if ms >= DURATION_THRESHOLD
-          "%.2fms" % ms
-        else
-          "%.0fms" % ( ms * DURATION_THRESHOLD )
-        end
-      end
-
-      def _subscribers_key
-        "#{ key }-subscribers"
-      end
-
-      def _events_key
-        "#{ key }-events"
       end
     end
   end

@@ -19,5 +19,5 @@ Gem::Specification.new do |gem|
 
   gem.add_dependency 'peek'
   gem.add_dependency 'redis'
-  gem.add_dependency 'activesupport'
+  gem.add_dependency 'atomic', '>= 1.0.0'
 end
