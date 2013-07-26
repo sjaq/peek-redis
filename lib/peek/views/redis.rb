@@ -4,13 +4,17 @@ require 'active_support/notifications'
 # Instrument Redis
 
 class Redis::Client
-  def process_with_instrument(*args, &block)
-    ActiveSupport::Notifications.instrument(Peek::Views::Redis.request_id) do
-      process_without_instrument(*args, &block)
+  
+  [:call, :call_pipeline, :call_loop].each do |method|
+    define_method(:"#{method}_with_instrument") do |*args, &block|
+      ActiveSupport::Notifications.instrument(Peek::Views::Redis.request_id) do
+        send :"#{method}_without_instrument", *args, &block
+      end
     end
+  
+    alias_method_chain method, :instrument
   end
 
-  alias_method_chain :process, :instrument
 end
 
 module Peek
